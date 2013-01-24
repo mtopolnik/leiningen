@@ -57,13 +57,12 @@
 
 (defn- start-server [project host port ack-port & [headless?]]
   (let [repl-options (:repl-options project)
+        init-ns (or (:init-ns repl-options) (:main project) 'user)
         server-starting-form
         ;; TODO: make this consistent with :injections
-        `(let [_# ~(if-let [init-ns (or (:init-ns repl-options) (:main project))]
-                     `(do (require '~init-ns)
-                          (alter-var-root (var *ns*) (constantly (find-ns '~init-ns)))
-                          ~(:init repl-options))
-                     (:init repl-options))
+        `(let [_# (do (when-not (find-ns '~init-ns) (require '~init-ns))
+                      (alter-var-root (var *ns*) (constantly (find-ns '~init-ns)))
+                      ~(:init repl-options))
                server# (clojure.tools.nrepl.server/start-server
                         :bind ~host :port ~port :ack-port ~ack-port
                         :handler ~(handler-for project))
