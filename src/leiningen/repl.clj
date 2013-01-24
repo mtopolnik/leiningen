@@ -55,15 +55,23 @@
     (for [n (concat defaults nrepl-syms nses)]
       (list 'quote n))))
 
+(defn- set-root-ns [init-ns]
+  `(when-let [ns# (or (find-ns '~init-ns)
+                      (try (require '~init-ns)
+                           (catch Throwable t#
+                             (println "Error loading initial namespace:"
+                                      (or (.getMessage t#) (type t#)))))
+                      (find-ns '~init-ns)
+                      (create-ns '~init-ns))]
+     (alter-var-root (var *ns*) (constantly ns#))))
+
 (defn- start-server [project host port ack-port & [headless?]]
   (let [repl-options (:repl-options project)
         init-ns (or (:init-ns repl-options) (:main project) 'user)
         server-starting-form
         ;; TODO: make this consistent with :injections
-        `(let [_# (do (when-not (find-ns '~init-ns) (require '~init-ns))
-                      (alter-var-root (var *ns*) (constantly (find-ns '~init-ns)))
-                      ~(:init repl-options))
-               server# (clojure.tools.nrepl.server/start-server
+        `(let [_# (do ~(set-root-ns init-ns) ~(:init repl-options) nil)
+               server# (nrepl.server/start-server
                         :bind ~host :port ~port :ack-port ~ack-port
                         :handler ~(handler-for project))
                port# (-> server# deref :ss .getLocalPort)]
