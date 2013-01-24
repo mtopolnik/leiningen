@@ -55,25 +55,23 @@
     (for [n (concat defaults nrepl-syms nses)]
       (list 'quote n))))
 
-(defn- set-root-ns [init-ns]
-  `(when-let [ns# (or (find-ns '~init-ns)
-                      (try (require '~init-ns)
-                           (catch Throwable t#
-                             (println "Error loading initial namespace:"
-                                      (or (.getMessage t#) (type t#)))))
-                      (find-ns '~init-ns)
-                      (create-ns '~init-ns))]
-     (alter-var-root (var *ns*) (constantly ns#))))
+(defn- project-init-form [{{:keys [init-ns init]} :repl-options, :keys [main]}]
+  (let [ns-form (if-let [init-ns (or init-ns main)]
+                  `(do (try (require '~init-ns)
+                            (catch Throwable t#
+                              (println "Error loading initial namespace:"
+                                       (or (.getMessage t#) (type t#)))))
+                       '~init-ns)
+                  ''user)]
+    `(do (alter-var-root (var *ns*) (constantly (create-ns ~ns-form)))
+         ~init)))
 
 (defn- start-server [project host port ack-port & [headless?]]
-  (let [repl-options (:repl-options project)
-        init-ns (or (:init-ns repl-options) (:main project) 'user)
-        server-starting-form
-        ;; TODO: make this consistent with :injections
-        `(let [_# (do ~(set-root-ns init-ns) ~(:init repl-options) nil)
-               server# (nrepl.server/start-server
-                        :bind ~host :port ~port :ack-port ~ack-port
-                        :handler ~(handler-for project))
+  (let [server-starting-form
+        `(let [server# (do ~(project-init-form (select-keys project [:repl-options :main]))
+                           (nrepl.server/start-server
+                            :bind ~host :port ~port :ack-port ~ack-port
+                            :handler ~(handler-for project)))
                port# (-> server# deref :ss .getLocalPort)]
            (when ~headless? (println "nREPL server started on port" port#))
            (spit ~(str (io/file (:target-path project) "repl-port")) port#)
