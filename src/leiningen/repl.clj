@@ -110,7 +110,7 @@
     (clojure.set/rename-keys
       (merge
        repl-options
-        {:init `(set! *ns* (alter-var-root (var *ns*) identity))}
+        {:init `(set! *ns* (.getRawRoot (var *ns*)))}
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
