@@ -56,13 +56,19 @@
       (list 'quote n))))
 
 (defn- start-server [project host port ack-port & [headless?]]
-  (let [server-starting-form
-        `(let [server# (clojure.tools.nrepl.server/start-server
+  (let [repl-options (:repl-options project)
+        server-starting-form
+        ;; TODO: make this consistent with :injections
+        `(let [_# ~(if-let [init-ns (or (:init-ns repl-options) (:main project))]
+                     `(do (require '~init-ns)
+                          (alter-var-root (var *ns*) (constantly (find-ns '~init-ns)))
+                          ~(:init repl-options))
+                     (:init repl-options))
+               server# (clojure.tools.nrepl.server/start-server
                         :bind ~host :port ~port :ack-port ~ack-port
                         :handler ~(handler-for project))
                port# (-> server# deref :ss .getLocalPort)]
            (when ~headless? (println "nREPL server started on port" port#))
-           (do ~(if headless? (-> project :repl-options :init)))
            (spit ~(str (io/file (:target-path project) "repl-port")) port#)
            (.deleteOnExit (io/file ~(:target-path project) "repl-port"))
            @(promise))]
@@ -105,11 +111,7 @@
     (clojure.set/rename-keys
       (merge
        repl-options
-        ;; TODO: make this consistent with :injections
-        {:init (if-let [init-ns (or (:init-ns repl-options) (:main project))]
-                 `(do (require '~init-ns) (in-ns '~init-ns)
-                      ~(:init repl-options))
-                 (:init repl-options))}
+        {:init `(set! *ns* (alter-var-root (var *ns*) identity))}
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
