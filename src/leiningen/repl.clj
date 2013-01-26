@@ -43,35 +43,31 @@
        ~@(map #(if (symbol? %) (list 'var %) %) nrepl-middleware))
     (or nrepl-handler '(clojure.tools.nrepl.server/default-handler))))
 
-(defn- init-requires [{{:keys [nrepl-middleware nrepl-handler]} :repl-options
-                       :as project}
+(defn- init-requires [{{:keys [init-ns nrepl-middleware nrepl-handler]} :repl-options
+                       :keys [main], :as project}
                       & nses]
   (let [defaults '[clojure.tools.nrepl.server complete.core]
         nrepl-syms (->> (cons nrepl-handler nrepl-middleware)
                      (filter symbol?)
                      (map namespace)
                      (remove nil?)
-                     (map symbol))]
-    (for [n (concat defaults nrepl-syms nses)]
+                     (map symbol))
+        init-ns (when-let [init-ns (or init-ns main)] [init-ns])]
+    (for [n (concat init-ns defaults nrepl-syms nses)]
       (list 'quote n))))
 
-(defn- project-init-form [{{:keys [init-ns init]} :repl-options, :keys [main]}]
-  (let [ns-form (if-let [init-ns (or init-ns main)]
-                  `(do (try (require '~init-ns)
-                            (catch Throwable t#
-                              (println "Error loading initial namespace:"
-                                       (or (.getMessage t#) (type t#)))))
-                       '~init-ns)
-                  ''user)]
-    `(do (alter-var-root (var *ns*) (constantly (create-ns ~ns-form)))
-         ~init)))
+(defn- project-init-form [project]
+  `(do (ns ~'leiningen.repl.config)
+       (println "effective-project-map")
+       (def ~'effective-project-map '~project)))
 
 (defn- start-server [project host port ack-port & [headless?]]
-  (let [server-starting-form
-        `(let [server# (do ~(project-init-form (select-keys project [:repl-options :main]))
-                           (nrepl.server/start-server
-                            :bind ~host :port ~port :ack-port ~ack-port
-                            :handler ~(handler-for project)))
+  (let [effective-project (project/merge-profiles
+                           project (profiles-for project false (not headless?)))
+        server-starting-form
+        `(let [server# (nrepl.server/start-server
+                        :bind ~host :port ~port :ack-port ~ack-port
+                        :handler ~(handler-for project))
                port# (-> server# deref :ss .getLocalPort)]
            (when ~headless? (println "nREPL server started on port" port#))
            (spit ~(str (io/file (:target-path project) "repl-port")) port#)
@@ -79,10 +75,14 @@
            @(promise))]
     (if project
       (eval/eval-in-project
-       (project/merge-profiles project
-                               (profiles-for project false (not headless?)))
-       server-starting-form
-       `(require ~@(init-requires project)))
+       effective-project
+       `(do ~(-> project :repl-options :init)
+            ~server-starting-form)
+       `(do ~@(for [n (init-requires project)]
+                `(try (require ~n)
+                      (catch Throwable t#
+                        (println "Error loading" (str ~n ":")
+                                 (or (.getMessage t#) (type t#))))))))
       (eval server-starting-form))))
 
 (defn- repl-port [project]
@@ -116,7 +116,7 @@
     (clojure.set/rename-keys
       (merge
        repl-options
-        {:init `(set! *ns* (.getRawRoot (var *ns*)))}
+        {:init nil}
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
