@@ -9,6 +9,7 @@
             [leiningen.trampoline :as trampoline]
             [clojure.tools.nrepl.ack :as nrepl.ack]
             [clojure.tools.nrepl.server :as nrepl.server]
+            [clojure.tools.nrepl.middleware :refer (set-descriptor!)]
             [leiningen.core.user :as user]
             [leiningen.core.classpath :as classpath]
             [leiningen.core.main :as main]))
@@ -35,37 +36,51 @@
    (:leiningen/repl (:profiles project) base-profile)
    (:repl (:profiles project)) (:repl (user/profiles))])
 
-(defn- handler-for [{{:keys [nrepl-middleware nrepl-handler]} :repl-options}]
+(defn- init-ns [{{:keys [init-ns]} :repl-options, :keys [main]}] (or init-ns main))
+
+(defn- wrap-init-ns [project]
+  (when-let [init-ns (init-ns project)]
+    `(with-local-vars
+         [wrap-init-ns#
+          (fn [h#]
+            (with-local-vars [init-ns-sentinel# nil]
+              (fn [{:keys [~'session] :as msg#}]
+                (when-not (@~'session init-ns-sentinel#)
+                  (swap! ~'session assoc (var *ns*) (create-ns '~init-ns)
+                         init-ns-sentinel# "init-ns-sentinel"))
+                (h# msg#))))]
+       (doto wrap-init-ns#
+         (set-descriptor!
+          {:requires #{(var clojure.tools.nrepl.middleware.session/session)}
+           :expects #{"eval"}})
+         (.bindRoot (var-get wrap-init-ns#))
+         (.setDynamic false)))))
+
+(defn- handler-for
+  [{{:keys [nrepl-middleware nrepl-handler]} :repl-options, :as project}]
   (when (and nrepl-middleware nrepl-handler)
     (main/abort "Can only use one of" :nrepl-handler "or" :nrepl-middleware))
-  (if nrepl-middleware
-    `(clojure.tools.nrepl.server/default-handler
-       ~@(map #(if (symbol? %) (list 'var %) %) nrepl-middleware))
-    (or nrepl-handler '(clojure.tools.nrepl.server/default-handler))))
+  (let [nrepl-middleware (remove nil? (concat [(wrap-init-ns project)] nrepl-middleware))]
+    (or nrepl-handler
+      `(clojure.tools.nrepl.server/default-handler
+         ~@(map #(if (symbol? %) (list 'var %) %) nrepl-middleware)))))
 
-(defn- init-requires [{{:keys [init-ns nrepl-middleware nrepl-handler]} :repl-options
-                       :keys [main], :as project}
-                      & nses]
+(defn- init-requires
+  [{{:keys [nrepl-middleware nrepl-handler]} :repl-options :as project} & nses]
   (let [defaults '[clojure.tools.nrepl.server complete.core]
         nrepl-syms (->> (cons nrepl-handler nrepl-middleware)
                      (filter symbol?)
                      (map namespace)
                      (remove nil?)
-                     (map symbol))
-        init-ns (when-let [init-ns (or init-ns main)] [init-ns])]
-    (for [n (concat init-ns defaults nrepl-syms nses)]
+                     (map symbol))]
+    (for [n (concat (remove nil? [(init-ns project)]) defaults nrepl-syms nses)]
       (list 'quote n))))
 
-(defn- project-init-form [project]
-  `(do (ns ~'leiningen.repl.config)
-       (println "effective-project-map")
-       (def ~'effective-project-map '~project)))
-
 (defn- start-server [project host port ack-port & [headless?]]
-  (let [effective-project (project/merge-profiles
-                           project (profiles-for project false (not headless?)))
+  (let [repl-options (merge (when-let [main (:main project)] {:init-ns main})
+                            (:repl-options project))
         server-starting-form
-        `(let [server# (nrepl.server/start-server
+        `(let [server# (clojure.tools.nrepl.server/start-server
                         :bind ~host :port ~port :ack-port ~ack-port
                         :handler ~(handler-for project))
                port# (-> server# deref :ss .getLocalPort)]
@@ -77,8 +92,8 @@
       (eval/eval-in-project
        (project/merge-profiles project
                                (profiles-for project false (not headless?)))
-       `(do (binding [*ns* (create-ns '~'leiningen.repl.config)]
-              (eval `(def ~'~'project-map '~'~project)))
+       `(do ~(when repl-options
+               `(System/setProperty "leiningen.repl.options" ~(str repl-options)))
             ~(-> project :repl-options :init)
             ~server-starting-form)
        `(do ~@(for [n (init-requires project)]
@@ -119,8 +134,9 @@
     (clojure.set/rename-keys
       (merge
        repl-options
-       {:init (when-let [init-ns (or (:init-ns repl-options) (:main project))]
-                `(in-ns '~init-ns))}
+       {:init `(when-let [opts# (System/getProperty "leiningen.repl.options")]
+                 (when-let [init-ns# (-> opts# read-string :init-ns)]
+                   (in-ns init-ns#)))}
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
