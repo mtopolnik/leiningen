@@ -75,8 +75,11 @@
            @(promise))]
     (if project
       (eval/eval-in-project
-       effective-project
-       `(do ~(-> project :repl-options :init)
+       (project/merge-profiles project
+                               (profiles-for project false (not headless?)))
+       `(do (binding [*ns* (create-ns '~'leiningen.repl.config)]
+              (eval `(def ~'~'project-map '~'~project)))
+            ~(-> project :repl-options :init)
             ~server-starting-form)
        `(do ~@(for [n (init-requires project)]
                 `(try (require ~n)
@@ -116,7 +119,8 @@
     (clojure.set/rename-keys
       (merge
        repl-options
-        {:init nil}
+       {:init (when-let [init-ns (or (:init-ns repl-options) (:main project))]
+                `(in-ns '~init-ns))}
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
@@ -183,7 +187,7 @@ and port."
          (when project @prep-blocker)
          (if-let [repl-port (nrepl.ack/wait-for-ack (-> project
                                                         :repl-options
-                                                        (:timeout 30000)))]
+                                                        (:timeout 60000)))]
            (do
              (println "nREPL server started on port" repl-port)
              (reply/launch-nrepl (options-for-reply project :attach repl-port)))

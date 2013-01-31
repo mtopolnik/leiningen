@@ -51,18 +51,30 @@
 (defmulti ^:private copy-to-jar (fn [project jar-os acc spec] (:type spec)))
 
 (defn- trim-leading [s to-trim]
-  (.replaceAll s (str "^" (Pattern/quote to-trim)) ""))
+  (let [size (.length to-trim)]
+    (if (.startsWith s to-trim)
+      (.substring s size)
+      s)))
+
+(defn- dir-string
+  "Returns the file's directory as a string, or the string representation of the
+  file itself if it is a directory."
+  [file]
+  (if-not (. file isDirectory)
+    (str (. file getParent) "/")
+    (str file "/")))
 
 (defmethod copy-to-jar :path [project jar-os acc spec]
   (when-not (acc (:path spec))
-    (doseq [child (file-seq (io/file (:path spec)))
-            :let [path (trim-leading (trim-leading (unix-path (str child))
-                                                   (unix-path (:path spec)))
-                                     "/")]]
-      (when-not (skip-file? child path (:jar-exclusions project))
-        (.putNextEntry jar-os (doto (JarEntry. path)
-                                (.setTime (.lastModified child))))
-        (io/copy child jar-os))))
+    (let [root-file (io/file (:path spec))
+          root-dir-path (unix-path (dir-string root-file))]
+      (doseq [child (file-seq root-file)
+              :let [path (trim-leading (unix-path (str child))
+                                       root-dir-path)]]
+        (when-not (skip-file? child path (:jar-exclusions project))
+          (.putNextEntry jar-os (doto (JarEntry. path)
+                                  (.setTime (.lastModified child))))
+          (io/copy child jar-os)))))
   (conj acc (:path spec)))
 
 (defmethod copy-to-jar :paths [project jar-os acc spec]
