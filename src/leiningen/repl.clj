@@ -53,8 +53,7 @@
          (set-descriptor!
           {:requires #{(var clojure.tools.nrepl.middleware.session/session)}
            :expects #{"eval"}})
-         (.bindRoot (var-get wrap-init-ns#))
-         (.setDynamic false)))))
+         (alter-var-root (constantly @wrap-init-ns#))))))
 
 (defn- handler-for
   [{{:keys [nrepl-middleware nrepl-handler]} :repl-options, :as project}]
