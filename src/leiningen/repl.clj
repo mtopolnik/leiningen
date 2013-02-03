@@ -22,7 +22,7 @@
                                            :exclusions [org.clojure/clojure]]]})
 
 (def base-profile {:dependencies '[^:displace
-                                    [org.clojure/tools.nrepl "0.2.1"
+                                    [org.clojure/tools.nrepl "0.2.2-SNAPSHOT"
                                      :exclusions [org.clojure/clojure]]
                                    ^:displace
                                     [clojure-complete "0.2.2"
@@ -35,25 +35,27 @@
    (:leiningen/repl (:profiles project) base-profile)
    (:repl (:profiles project)) (:repl (user/profiles))])
 
-(defn- handler-for [{{:keys [nrepl-middleware nrepl-handler]} :repl-options}]
+(defn- init-ns [{{:keys [init-ns]} :repl-options, :keys [main]}] (or init-ns main))
+
+(defn- handler-for
+  [{{:keys [nrepl-middleware nrepl-handler]} :repl-options, :as project}]
   (when (and nrepl-middleware nrepl-handler)
     (main/abort "Can only use one of" :nrepl-handler "or" :nrepl-middleware))
-  (if nrepl-middleware
-    `(clojure.tools.nrepl.server/default-handler
-       ~@(map #(if (symbol? %) (list 'var %) %) nrepl-middleware))
-    (or nrepl-handler '(clojure.tools.nrepl.server/default-handler))))
+  (or nrepl-handler
+      `(clojure.tools.nrepl.server/default-handler
+         {#'clojure.tools.nrepl.middleware.session/session
+          [:init-ns '~(init-ns project)]}
+         ~@(map #(if (symbol? %) (list 'var %) %) nrepl-middleware))))
 
-(defn- init-requires [{{:keys [init-ns nrepl-middleware nrepl-handler]} :repl-options
-                       :keys [main], :as project}
-                      & nses]
+(defn- init-requires
+  [{{:keys [nrepl-middleware nrepl-handler]} :repl-options :as project} & nses]
   (let [defaults '[clojure.tools.nrepl.server complete.core]
         nrepl-syms (->> (cons nrepl-handler nrepl-middleware)
                      (filter symbol?)
                      (map namespace)
                      (remove nil?)
-                     (map symbol))
-        init-ns (when-let [init-ns (or init-ns main)] [init-ns])]
-    (for [n (concat init-ns defaults nrepl-syms nses)]
+                     (map symbol))]
+    (for [n (concat (remove nil? [(init-ns project)]) defaults nrepl-syms nses)]
       (list 'quote n))))
 
 (defn- start-server [project host port ack-port & [headless?]]
@@ -70,9 +72,7 @@
       (eval/eval-in-project
        (project/merge-profiles project
                                (profiles-for project false (not headless?)))
-       `(do (binding [*ns* (create-ns '~'leiningen.repl.config)]
-              (eval `(def ~'~'project-map '~'~project)))
-            ~(-> project :repl-options :init)
+       `(do ~(-> project :repl-options :init)
             ~server-starting-form)
        `(do ~@(for [n (init-requires project)]
                 `(try (require ~n)
@@ -111,9 +111,7 @@
                             (:repl-options project))]
     (clojure.set/rename-keys
       (merge
-       repl-options
-       {:init (when-let [init-ns (or (:init-ns repl-options) (:main project))]
-                `(in-ns '~init-ns))}
+       (dissoc repl-options :init)
         (cond
           attach
             {:attach (if-let [host (repl-host project)]
@@ -123,8 +121,7 @@
             {:port (str port)}
           :else
             {}))
-      {:prompt :custom-prompt
-       :init :custom-init})))
+      {:prompt :custom-prompt})))
 
 (defn- trampoline-repl [project]
   (let [options (options-for-reply project :port (repl-port project))]
